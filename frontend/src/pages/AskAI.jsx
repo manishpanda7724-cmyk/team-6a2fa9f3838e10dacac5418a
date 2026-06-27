@@ -2,7 +2,8 @@ import { useState, useEffect, useRef } from 'react'
 import { useSearchParams, useNavigate } from 'react-router-dom'
 import { motion, AnimatePresence } from 'framer-motion'
 import { Brain, Send, ChevronDown, ChevronUp, Sparkles, BookOpen, ArrowUpRight,
-         ThumbsUp, ThumbsDown, AlertTriangle, CheckCircle, Info, Zap, Copy, RotateCcw } from 'lucide-react'
+         ThumbsUp, ThumbsDown, AlertTriangle, CheckCircle, Info, Zap, Copy, RotateCcw,
+         Mic, MicOff, Volume2, VolumeX } from 'lucide-react'
 import { useAuthStore } from '../store'
 import api from '../utils/api'
 import toast from 'react-hot-toast'
@@ -86,8 +87,14 @@ export default function AskAI() {
   const [loading, setLoading] = useState(false)
   const [history, setHistory] = useState([])
   const [feedback, setFeedback] = useState({})
+  const [isListening, setIsListening] = useState(false)
+  const [isPlayingTTS, setIsPlayingTTS] = useState(false)
   const textRef = useRef(null)
   const resultRef = useRef(null)
+  const recognitionRef = useRef(null)
+  const startText = useRef('')
+
+  const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition
 
   useEffect(() => {
     if (searchParams.get('q') && !result) {
@@ -101,7 +108,27 @@ export default function AskAI() {
     }
   }, [result])
 
+  useEffect(() => {
+    return () => {
+      if (window.speechSynthesis) {
+        window.speechSynthesis.cancel()
+      }
+      if (recognitionRef.current) {
+        recognitionRef.current.stop()
+      }
+    }
+  }, [])
+
   const handleAsk = async (q = null) => {
+    if (window.speechSynthesis) {
+      window.speechSynthesis.cancel()
+      setIsPlayingTTS(false)
+    }
+    if (isListening) {
+      recognitionRef.current?.stop()
+      setIsListening(false)
+    }
+
     const query = (q || question).trim()
     if (!query || loading) {
       if (!query) toast.error('Please enter a question')
@@ -127,6 +154,88 @@ export default function AskAI() {
       toast.error(errorMsg)
     }
     setLoading(false)
+  }
+
+  const toggleListening = () => {
+    if (!SpeechRecognition) {
+      toast.error('Voice input is not supported in this browser. Try Chrome or Edge.')
+      return
+    }
+
+    if (isListening) {
+      recognitionRef.current?.stop()
+      setIsListening(false)
+    } else {
+      try {
+        const recognition = new SpeechRecognition()
+        recognition.continuous = true
+        recognition.interimResults = true
+        recognition.lang = 'en-US'
+
+        startText.current = question
+
+        recognition.onstart = () => {
+          setIsListening(true)
+          toast.success('Listening... speak now.')
+        }
+
+        recognition.onerror = (e) => {
+          console.error('Speech recognition error:', e.error)
+          if (e.error !== 'no-speech') {
+            toast.error(`Speech recognition error: ${e.error}`)
+            setIsListening(false)
+          }
+        }
+
+        recognition.onend = () => {
+          setIsListening(false)
+        }
+
+        recognition.onresult = (e) => {
+          let speechText = ''
+          for (let i = e.resultIndex; i < e.results.length; ++i) {
+            speechText += e.results[i][0].transcript
+          }
+          const baseText = startText.current.trim()
+          setQuestion(baseText ? `${baseText} ${speechText.trim()}` : speechText.trim())
+        }
+
+        recognitionRef.current = recognition
+        recognition.start()
+      } catch (err) {
+        console.error(err)
+        toast.error('Could not start speech recognition')
+      }
+    }
+  }
+
+  const toggleTTS = () => {
+    if (!window.speechSynthesis) {
+      toast.error('Text-to-speech is not supported in this browser.')
+      return
+    }
+
+    if (isPlayingTTS) {
+      window.speechSynthesis.cancel()
+      setIsPlayingTTS(false)
+    } else {
+      if (!result?.answer) return
+
+      const cleanText = result.answer.replace(/[*#_`~]/g, '')
+      const utterance = new SpeechSynthesisUtterance(cleanText)
+
+      utterance.onend = () => {
+        setIsPlayingTTS(false)
+      }
+
+      utterance.onerror = (e) => {
+        console.error('TTS error:', e)
+        setIsPlayingTTS(false)
+      }
+
+      setIsPlayingTTS(true)
+      window.speechSynthesis.speak(utterance)
+    }
   }
 
   const handleFeedback = async (faqId, helpful) => {
@@ -183,11 +292,22 @@ export default function AskAI() {
           <textarea ref={textRef} value={question}
             onChange={e => setQuestion(e.target.value)} onKeyDown={handleKeyDown}
             placeholder="Ask about NOC, ViBe issues, Rosetta, team formation, offer letter... (Ctrl+Enter to send)"
-            className="input-dark min-h-[100px] resize-none pr-14 text-base" rows={3} />
-          <button onClick={() => handleAsk()} disabled={loading || !question.trim()}
-            className="absolute bottom-3 right-3 w-9 h-9 bg-blue-600 hover:bg-blue-500 disabled:opacity-40 disabled:cursor-not-allowed rounded-lg flex items-center justify-center transition-all hover:shadow-lg hover:shadow-blue-500/25">
-            <Send size={16} className="text-white" />
-          </button>
+            className="input-dark min-h-[100px] resize-none pr-24 text-base" rows={3} />
+          <div className="absolute bottom-3 right-3 flex items-center gap-2">
+            <button onClick={toggleListening}
+              className={`w-9 h-9 rounded-lg flex items-center justify-center transition-all ${
+                isListening
+                  ? 'bg-red-600 text-white animate-pulse shadow-lg shadow-red-500/25'
+                  : 'bg-dark-600 hover:bg-dark-500 text-slate-300 border border-dark-500 hover:border-dark-400 hover:shadow-lg hover:shadow-blue-500/10'
+              }`}
+              title={isListening ? "Stop listening" : "Ask by voice"}>
+              {isListening ? <MicOff size={16} /> : <Mic size={16} />}
+            </button>
+            <button onClick={() => handleAsk()} disabled={loading || !question.trim() || isListening}
+              className="w-9 h-9 bg-blue-600 hover:bg-blue-500 disabled:opacity-40 disabled:cursor-not-allowed rounded-lg flex items-center justify-center transition-all hover:shadow-lg hover:shadow-blue-500/25">
+              <Send size={16} className="text-white" />
+            </button>
+          </div>
         </div>
         <p className="text-xs text-slate-600 mt-2">Ctrl+Enter to ask · Your question is matched against 180+ FAQ entries before AI generates a response</p>
       </div>
@@ -229,6 +349,15 @@ export default function AskAI() {
                 </div>
                 <div className="flex items-center gap-2">
                   <ConfidenceBadge level={result.confidence} score={result.confidenceScore} />
+                  <button onClick={toggleTTS}
+                    className={`p-1.5 rounded-lg transition-colors ${
+                      isPlayingTTS
+                        ? 'bg-blue-500/20 text-blue-400'
+                        : 'text-slate-500 hover:text-slate-300 hover:bg-dark-600'
+                    }`}
+                    title={isPlayingTTS ? "Stop reading" : "Read answer aloud"}>
+                    {isPlayingTTS ? <VolumeX size={14} /> : <Volume2 size={14} />}
+                  </button>
                   <button onClick={copyAnswer} className="p-1.5 rounded-lg text-slate-500 hover:text-slate-300 hover:bg-dark-600 transition-colors">
                     <Copy size={14} />
                   </button>
